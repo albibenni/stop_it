@@ -1,17 +1,26 @@
 {
-    "name": "stop-it-extension",
-    "version": "1.0.0",
-    "author": "Alberto Benatti",
-    "description": "Browser extension for Stop It activity tracker",
-    "scripts": {
-        "build": "tsc && npm run copy-manifest && npm run copy-icons",
-        "copy-manifest": "cp src/manifest.json dist/",
-        "copy-icons": "cp src/*.png dist/",
-        "watch": "tsc --watch",
-        "clean": "rm -rf dist"
-    },
-    "devDependencies": {
-        "@types/chrome": "0.1.31",
-        "typescript": "5.9.3"
-    }
+  "name": "stop-it-extension",
+  "version": "1.1.0",
+  "author": "Alberto Benatti",
+  "description": "Browser extension for Stop It activity tracker",
+  "scripts": {
+    "build": "tsc && npm run copy-manifest && npm run copy-icons",
+    "copy-manifest": "cp src/manifest.json dist/",
+    "copy-icons": "cp src/*.png dist/",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/chrome": "0.1.31",
+    "typescript": "5.9.3",
+    "zod": "4.1.13",
+    "typescript-eslint": "8.48.0",
+    "globals": "16.5.0",
+    "prettier": "3.6.2",
+    "eslint": "9.39.1",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-prettier": "5.5.4",
+    "@eslint/js": "9.39.1"
+  }
 }

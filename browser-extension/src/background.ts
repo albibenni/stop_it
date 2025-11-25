@@ -1,24 +1,33 @@
-// Native messaging host name -
-// NOTE: must match the name in the native manifest
-const NATIVE_APP_NAME = "com.stopit.tracker";
+import { z } from "zod/v4";
+
+// WebSocket connection to the Stop It daemon
+const DAEMON_WS_URL = "ws://127.0.0.1:8765";
 
 // Track last seen state to avoid sending duplicate messages
 let lastUrl = "";
 let lastTitle = "";
 
+// WebSocket connection
+let ws: WebSocket | null = null;
+let reconnectInterval: number | null = null;
+const RECONNECT_DELAY = 5000; // 5 seconds
+
 // Message types
-interface TabUpdateMessage {
+type TabUpdateMessage = {
   type: "tab_update";
   url: string;
   title: string;
   domain: string | null;
   timestamp: number;
-}
+};
 
-interface NativeResponse {
-  success: boolean;
-  message?: string;
-}
+// Zod schema for daemon response validation
+const NativeResponseSchema = z.object({
+  success: z.boolean(),
+  message: z.string().optional(),
+});
+
+//type NativeResponse = z.infer<typeof NativeResponseSchema>;
 
 /**
  * Extract domain from URL
@@ -47,7 +56,7 @@ async function checkActiveTab(): Promise<void> {
       currentWindow: true,
     });
 
-    if (tab && tab.url && tab.title) {
+    if (tab.url && tab.title) {
       // Skip chrome:// and other internal URLs
       if (
         tab.url.startsWith("chrome://") ||
@@ -81,36 +90,78 @@ async function checkActiveTab(): Promise<void> {
 }
 
 /**
- * Send message to the native messaging host
+ * Connect to the WebSocket daemon
+ * @return void
+ */
+function connectWebSocket(): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    return; // Already connected
+  }
+
+  console.log("Connecting to Stop It daemon...");
+  ws = new WebSocket(DAEMON_WS_URL);
+
+  ws.onopen = () => {
+    console.log("Connected to Stop It daemon");
+    if (reconnectInterval) {
+      clearInterval(reconnectInterval);
+      reconnectInterval = null;
+    }
+    // Send current tab on connection (fire-and-forget)
+    void checkActiveTab();
+  };
+
+  ws.onmessage = (event: MessageEvent<unknown>) => {
+    try {
+      const rawData = event.data;
+      if (typeof rawData !== "string") {
+        console.error("Expected string data from daemon, got:", typeof rawData);
+        return;
+      }
+      const data = JSON.parse(rawData) as unknown;
+      const response = NativeResponseSchema.parse(data);
+      console.log("Daemon response:", response);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.error("Invalid daemon response format:", error.issues);
+      } else {
+        console.error("Failed to parse daemon response:", error);
+      }
+    }
+  };
+
+  ws.onerror = (error) => {
+    console.error("WebSocket error:", error);
+  };
+
+  ws.onclose = () => {
+    console.log("Disconnected from Stop It daemon");
+    ws = null;
+    // Auto-reconnect
+    if (!reconnectInterval) {
+      reconnectInterval = setInterval(() => {
+        console.log("Attempting to reconnect...");
+        connectWebSocket();
+      }, RECONNECT_DELAY);
+    }
+  };
+}
+
+/**
+ * Send message to the daemon via WebSocket
+ * @param message - The message to send
+ * @returns void
  */
 function sendMessage(message: TabUpdateMessage): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("WebSocket not connected. Message not sent.");
+    return;
+  }
+
   try {
-    chrome.runtime.sendNativeMessage(
-      NATIVE_APP_NAME,
-      message,
-      (response: NativeResponse) => {
-        if (chrome.runtime.lastError) {
-          console.error(
-            "Native messaging error:",
-            chrome.runtime.lastError.message,
-          );
-          // This is expected if the native host isn't installed yet
-          if (
-            chrome.runtime.lastError.message?.includes(
-              "Specified native messaging host not found",
-            )
-          ) {
-            console.warn(
-              "Native host not installed. Run the installation script from your Rust project.",
-            );
-          }
-        } else if (response) {
-          console.log("Native app response:", response);
-        }
-      },
-    );
+    ws.send(JSON.stringify(message));
   } catch (error) {
-    console.error("Failed to send to native app:", error);
+    console.error("Failed to send message to daemon:", error);
   }
 }
 
@@ -118,16 +169,16 @@ function sendMessage(message: TabUpdateMessage): void {
  * Listen for tab changes
  */
 chrome.tabs.onActivated.addListener(() => {
-  checkActiveTab();
+  void checkActiveTab();
 });
 
 /*
  * Listen for tab updates (URL/title changes)
  */
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
   // Only check when the tab is active and URL/title changed
   if (tab.active && (changeInfo.url || changeInfo.title)) {
-    checkActiveTab();
+    void checkActiveTab();
   }
 });
 
@@ -143,12 +194,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
  */
 chrome.windows.onFocusChanged.addListener((windowId) => {
   if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-    checkActiveTab();
+    void checkActiveTab();
   }
 });
 
-// Initial check on startup
-checkActiveTab();
+// Connect to daemon on startup
+connectWebSocket();
 
 // Polling fallback (every 2 seconds) to catch cases where events might be missed
 setInterval(checkActiveTab, 2000);
