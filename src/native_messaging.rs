@@ -24,7 +24,7 @@ pub fn read_message() -> io::Result<Option<TabUpdateMessage>> {
 
     // Read the 4-byte message length
     match io::stdin().read_exact(&mut length_bytes) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
             return Ok(None); // No more messages
         }
