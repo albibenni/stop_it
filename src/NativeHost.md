@@ -53,3 +53,8 @@ You can't know your extension ID until after you've loaded the unpacked extensio
 
 Without these scripts, you'd have to manually create and place the manifest files in the correct
 browser directories and manage the extension ID yourself - these scripts automate that process.
+
+## Run the App
+
+- Use the wrapper `./native_host_wrapper.sh`
+- Run `./target/release/stop_it --native-message`
