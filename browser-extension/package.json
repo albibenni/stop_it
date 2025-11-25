@@ -1,0 +1,17 @@
+{
+    "name": "stop-it-extension",
+    "version": "1.0.0",
+    "author": "Alberto Benatti",
+    "description": "Browser extension for Stop It activity tracker",
+    "scripts": {
+        "build": "tsc && npm run copy-manifest && npm run copy-icons",
+        "copy-manifest": "cp src/manifest.json dist/",
+        "copy-icons": "cp src/*.png dist/",
+        "watch": "tsc --watch",
+        "clean": "rm -rf dist"
+    },
+    "devDependencies": {
+        "@types/chrome": "0.1.31",
+        "typescript": "5.9.3"
+    }
+}

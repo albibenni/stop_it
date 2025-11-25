@@ -1,0 +1,21 @@
+{
+    "manifest_version": 3,
+    "name": "Stop It - Activity Tracker",
+    "version": "1.0.0",
+    "description": "Sends current URL to Stop It activity tracker for better time tracking",
+
+    "permissions": ["tabs", "activeTab", "nativeMessaging"],
+
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    },
+
+    "host_permissions": ["<all_urls>"],
+
+    "icons": {
+        "16": "leaf16.png",
+        "48": "leaf48.png",
+        "128": "leaf128.png"
+    }
+}
