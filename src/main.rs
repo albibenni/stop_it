@@ -8,9 +8,11 @@ use std::io::Write;
 use std::process::Command;
 use std::thread;
 use std::time::Duration as StdDuration;
+mod native_messaging;
 mod pomodoro;
 
-pub const POLL_INTERVAL_MS: u64 = 1000; // Check active window every second
+const POLL_INTERVAL_MS: u64 = 1000; // Check active window every second
+
 #[derive(Debug, Deserialize)]
 struct HyprlandWindow {
     title: String,
@@ -217,6 +219,12 @@ fn send_notification(message: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+
+    // Check if running in native messaging mode (called by browser extension)
+    if args.contains(&"--native-messaging".to_string()) {
+        return run_native_messaging_mode();
+    }
+
     let verbose = args.contains(&"--verbose".to_string()) || args.contains(&"-v".to_string());
 
     // Check for log file argument
@@ -328,4 +336,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         thread::sleep(StdDuration::from_millis(POLL_INTERVAL_MS));
     }
+}
+
+/// Run in native messaging mode - receives messages from browser extension
+fn run_native_messaging_mode() -> Result<(), Box<dyn std::error::Error>> {
+    // Set up logging to a file (can't use stdout in native messaging)
+    let log_path = format!(
+        "{}/.local/share/stop_it/native_messaging.log",
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+    );
+
+    if let Some(parent) = std::path::Path::new(&log_path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+
+    writeln!(
+        log_file,
+        "\n=== Native messaging mode started at {} ===",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    )?;
+
+    // Create a shared log file for domain tracking
+    let activity_log_path = format!(
+        "{}/.local/share/stop_it/browser_activity.log",
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+    );
+
+    // Read messages in a loop
+    loop {
+        match native_messaging::read_message() {
+            Ok(Some(message)) => {
+                writeln!(
+                    log_file,
+                    "[{}] Received: url={}, title={}, domain={:?}",
+                    Local::now().format("%H:%M:%S"),
+                    message.url,
+                    message.title,
+                    message.domain
+                )?;
+
+                // Log to activity file
+                if let Ok(mut activity_file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&activity_log_path)
+                {
+                    let domain = message.domain.as_ref().unwrap_or(&message.url);
+                    writeln!(
+                        activity_file,
+                        "[{}] Browser: {}",
+                        Local::now().format("%Y-%m-%d %H:%M:%S"),
+                        domain
+                    )?;
+                }
+
+                // Send success response
+                let response = native_messaging::NativeResponse {
+                    success: true,
+                    message: Some("Message received".to_string()),
+                };
+
+                if let Err(e) = native_messaging::write_response(&response) {
+                    writeln!(log_file, "Error writing response: {}", e)?;
+                }
+            }
+            Ok(None) => {
+                writeln!(log_file, "No more messages, exiting")?;
+                break;
+            }
+            Err(e) => {
+                writeln!(log_file, "Error reading message: {}", e)?;
+                let response = native_messaging::NativeResponse {
+                    success: false,
+                    message: Some(format!("Error: {}", e)),
+                };
+                let _ = native_messaging::write_response(&response);
+                break;
+            }
+        }
+    }
+
+    Ok(())
 }
