@@ -1,22 +1,19 @@
 use chrono::{DateTime, Local};
 use notify_rust::Notification;
 use regex::Regex;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration as StdDuration;
-mod native_messaging;
+use tokio::time::{Duration, interval};
+mod hypr;
 mod pomodoro;
+mod ws;
 
 const POLL_INTERVAL_MS: u64 = 1000; // Check active window every second
-
-#[derive(Debug, Deserialize)]
-struct HyprlandWindow {
-    title: String,
-}
 
 #[derive(Debug)]
 struct DomainTracker {
@@ -64,14 +61,6 @@ impl DomainTracker {
 
     fn get_mode_duration(&self) -> i64 {
         (Local::now() - self.mode_start).num_seconds()
-    }
-
-    fn get_mode_remaining(&self) -> i64 {
-        let target = match self.mode {
-            pomodoro::pomodoro::PomodoroMode::Work => pomodoro::pomodoro::POMODORO_WORK_MINUTES,
-            pomodoro::pomodoro::PomodoroMode::Break => pomodoro::pomodoro::POMODORO_BREAK_MINUTES,
-        };
-        (target * 60) - self.get_mode_duration()
     }
 
     fn switch_mode(&mut self) {
@@ -128,26 +117,6 @@ impl DomainTracker {
         }
         println!("------------------------\n");
     }
-}
-
-fn get_active_window_title() -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new("hyprctl")
-        .args(["activewindow", "-j"])
-        .output()?;
-
-    if !output.status.success() {
-        return Ok(String::new());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    if stdout.trim().is_empty() {
-        return Ok(String::new());
-    }
-
-    let window: HyprlandWindow = serde_json::from_str(&stdout)?;
-    println!("{:?}", window);
-    Ok(window.title)
 }
 
 fn extract_domain_from_title(title: &str) -> Option<String> {
@@ -217,12 +186,13 @@ fn send_notification(message: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
-    // Check if running in native messaging mode (called by browser extension)
-    if args.contains(&"--native-messaging".to_string()) {
-        return run_native_messaging_mode();
+    // Check if running in daemon mode (WebSocket server)
+    if args.contains(&"--daemon".to_string()) {
+        return run_daemon_mode().await;
     }
 
     let verbose = args.contains(&"--verbose".to_string()) || args.contains(&"-v".to_string());
@@ -338,11 +308,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Run in native messaging mode - receives messages from browser extension
-fn run_native_messaging_mode() -> Result<(), Box<dyn std::error::Error>> {
-    // Set up logging to a file (can't use stdout in native messaging)
+/// Run in daemon mode - WebSocket server + Pomodoro timer + activity tracking
+async fn run_daemon_mode() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🍅 Stop It - Daemon Mode");
+    println!("======================================================");
+    println!(
+        "Pomodoro settings: {}min work / {}min break",
+        pomodoro::pomodoro::POMODORO_WORK_MINUTES,
+        pomodoro::pomodoro::POMODORO_BREAK_MINUTES
+    );
+    println!("Running WebSocket server on ws://127.0.0.1:8765");
+    println!("Tracking browser activity via WebSocket\n");
+
+    // Set up logging
     let log_path = format!(
-        "{}/.local/share/stop_it/native_messaging.log",
+        "{}/.local/share/stop_it/daemon.log",
         std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
     );
 
@@ -350,76 +330,86 @@ fn run_native_messaging_mode() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut log_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
+    // Create activity channel for browser messages
+    let (activity_tx, mut activity_rx) = ws::websocket_server::create_activity_channel();
 
-    writeln!(
-        log_file,
-        "\n=== Native messaging mode started at {} ===",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    )?;
+    // Shared tracker wrapped in Arc<Mutex<>> for thread-safe access
+    let tracker = Arc::new(Mutex::new(DomainTracker::new(Some(log_path.clone()))));
+    let tracker_clone = Arc::clone(&tracker);
 
-    // Create a shared log file for domain tracking
-    let activity_log_path = format!(
-        "{}/.local/share/stop_it/browser_activity.log",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    );
+    // Spawn WebSocket server
+    let ws_addr = "127.0.0.1:8765".parse()?;
+    tokio::spawn(async move {
+        if let Err(e) = ws::websocket_server::start_websocket_server(ws_addr, activity_tx).await {
+            eprintln!("WebSocket server error: {}", e);
+        }
+    });
 
-    // Read messages in a loop
+    // Spawn browser activity processor
+    tokio::spawn(async move {
+        while let Some(message) = activity_rx.recv().await {
+            if let Ok(mut tracker) = tracker_clone.lock() {
+                let domain = message.domain.clone().or_else(|| {
+                    // Fallback: try to extract domain from URL
+                    message.url.split('/').nth(2).map(|s| s.to_string())
+                });
+
+                if domain != tracker.current_domain {
+                    if let Some(ref d) = domain {
+                        let msg = format!(
+                            "[{}] Browser switched to: {}",
+                            Local::now().format("%H:%M:%S"),
+                            d
+                        );
+                        println!("{}", msg);
+                        tracker.log(&msg);
+                    }
+                }
+
+                tracker.update(domain);
+            }
+        }
+    });
+
+
+    // Main loop: Pomodoro timer
+    let mut timer_interval = interval(Duration::from_secs(1));
+
     loop {
-        match native_messaging::read_message() {
-            Ok(Some(message)) => {
-                writeln!(
-                    log_file,
-                    "[{}] Received: url={}, title={}, domain={:?}",
-                    Local::now().format("%H:%M:%S"),
-                    message.url,
-                    message.title,
-                    message.domain
-                )?;
+        timer_interval.tick().await;
 
-                // Log to activity file
-                if let Ok(mut activity_file) = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&activity_log_path)
-                {
-                    let domain = message.domain.as_ref().unwrap_or(&message.url);
-                    writeln!(
-                        activity_file,
-                        "[{}] Browser: {}",
-                        Local::now().format("%Y-%m-%d %H:%M:%S"),
-                        domain
-                    )?;
-                }
+        if let Ok(mut tracker) = tracker.lock() {
+            // Update time for current domain
+            if let Some(current) = tracker.current_domain.clone() {
+                *tracker.time_spent.entry(current).or_insert(0) += 1;
+            }
 
-                // Send success response
-                let response = native_messaging::NativeResponse {
-                    success: true,
-                    message: Some("Message received".to_string()),
+            // Check if should switch Pomodoro mode
+            if tracker.should_switch_mode() {
+                let message = match tracker.mode {
+                    pomodoro::pomodoro::PomodoroMode::Work => format!(
+                        "Work session complete! Time for a {}-minute break.",
+                        pomodoro::pomodoro::POMODORO_BREAK_MINUTES
+                    ),
+                    pomodoro::pomodoro::PomodoroMode::Break => format!(
+                        "Break is over! Starting {}-minute work session.",
+                        pomodoro::pomodoro::POMODORO_WORK_MINUTES
+                    ),
                 };
 
-                if let Err(e) = native_messaging::write_response(&response) {
-                    writeln!(log_file, "Error writing response: {}", e)?;
+                println!("\n🔔 {}", message);
+                tracker.log(&format!("🔔 {}", message));
+
+                if let Err(e) = send_notification(&message) {
+                    eprintln!("Failed to send notification: {}", e);
                 }
-            }
-            Ok(None) => {
-                writeln!(log_file, "No more messages, exiting")?;
-                break;
-            }
-            Err(e) => {
-                writeln!(log_file, "Error reading message: {}", e)?;
-                let response = native_messaging::NativeResponse {
-                    success: false,
-                    message: Some(format!("Error: {}", e)),
-                };
-                let _ = native_messaging::write_response(&response);
-                break;
+
+                if tracker.mode == pomodoro::pomodoro::PomodoroMode::Work {
+                    tracker.print_stats();
+                }
+
+                tracker.switch_mode();
             }
         }
     }
-
-    Ok(())
 }
