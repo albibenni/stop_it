@@ -1,0 +1,3 @@
+- pomodoro timer selectable
+- block or collect sites to notify
+  - like end of session

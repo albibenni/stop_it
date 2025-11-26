@@ -6,7 +6,6 @@ A Rust-based daemon that monitors your browser activity and helps you stay focus
 
 - **Daemon Mode**: Runs continuously in the background as a systemd service
 - **WebSocket Server**: Real-time communication with browser extension (ws://127.0.0.1:8765)
-- **Dual Tracking**: Monitors both browser extension messages AND Hyprland window titles
 - **Universal Domain Extraction**: Extracts domains from ANY website (github.com, google.com, docs.rs, etc.)
 - **Time Tracking**: Records time spent on each domain during your session
 - **Pomodoro Timer**: Automatically switches between work (25min) and break (5min) modes
@@ -17,8 +16,6 @@ A Rust-based daemon that monitors your browser activity and helps you stay focus
 
 ## Requirements
 
-- Linux with Hyprland (Wayland compositor)
-- `hyprctl` command available (included with Hyprland)
 - Rust 1.70 or later
 - systemd (for daemon autostart)
 
@@ -51,23 +48,6 @@ Then load the extension in your browser:
 - Click "Load unpacked"
 - Select the `browser-extension/dist` folder
 
-### 3. Verify It's Working
-
-Check the daemon logs:
-
-```bash
-journalctl --user -u stop-it -f
-```
-
-You should see:
-
-```
-🍅 Stop It - Daemon Mode
-Running WebSocket server on ws://127.0.0.1:8765
-New WebSocket connection from: 127.0.0.1:xxxxx
-[16:08:38] Browser switched to: github.com
-```
-
 ## Useful Commands
 
 ```bash
@@ -97,8 +77,7 @@ journalctl --user -u stop-it -f
 │   Extension     │◄──────────────────►│  (always running)        │
 │  (JavaScript)   │  ws://localhost    │                          │
 │                 │     :8765          │  ├─ WebSocket Server     │
-└─────────────────┘                    │  ├─ Hyprland Monitor     │
-                                       │  ├─ Pomodoro Timer       │
+└─────────────────┘                    │  ├─ Pomodoro Timer       │
                                        │  └─ Activity Tracker     │
                                        └──────────────────────────┘
 ```
@@ -109,11 +88,8 @@ journalctl --user -u stop-it -f
 2. **Extension connects**: Establishes persistent WebSocket connection
 3. **Continuous monitoring**:
    - Extension sends URL/title updates when tabs change
-   - Hyprland poller detects window title changes every second
-   - Both sources feed into the same activity tracker
 4. **Pomodoro timer**: Runs every second, tracks work/break cycles
-5. **Real-time updates**: All activity logged and tracked continuously
-6. **Auto-reconnect**: If daemon restarts, extension reconnects automatically
+5. **Auto-reconnect**: If daemon restarts, extension reconnects automatically
 
 ## Troubleshooting
 
@@ -150,9 +126,9 @@ journalctl --user -u stop-it -n 50
 This tool runs entirely locally and does NOT:
 
 - Send any data to external servers
-- Store browsing history permanently
+- Store browsing history
 - Decrypt HTTPS traffic
-- Track anything beyond active window titles
+- Track anything beyond active window titles and urls
 
 ## License
 
