@@ -12,7 +12,9 @@ pub struct TabUpdateMessage {
     pub url: String,
     pub title: String,
     pub domain: Option<String>,
-    // pub timestamp: i64,
+    //TODO: add category by user choice, future impl with ui? by default impl base fields
+    #[serde(default)]
+    pub category: Option<String>, // e.g., "productivity", "social", "entertainment"
 }
 
 #[derive(Debug, Serialize)]
@@ -63,8 +65,11 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, activity_tx
                 match serde_json::from_str::<TabUpdateMessage>(&text) {
                     Ok(tab_message) => {
                         println!(
-                            "[WebSocket] Received: url={}, title={}, domain={:?}",
-                            tab_message.url, tab_message.title, tab_message.domain
+                            "[WebSocket] Received: url={}, title={}, domain={:?}, category={:?}",
+                            tab_message.url,
+                            tab_message.title,
+                            tab_message.domain,
+                            tab_message.category
                         );
 
                         // Send to activity tracker
