@@ -1,53 +1,90 @@
 # Stop It - Browser Activity Monitor & Pomodoro Timer
 
-A Rust-based CLI tool that monitors your browser activity and helps you stay focused using the Pomodoro technique.
+A Rust-based daemon that monitors your browser activity and helps you stay focused using the Pomodoro technique.
 
 ## Features
 
-- **Active Window Monitoring**: Tracks which browser tab/window is currently active
-- **Browser Extension**: Accurate URL tracking via native messaging (optional)
+- **Daemon Mode**: Runs continuously in the background as a systemd service
+- **WebSocket Server**: Real-time communication with browser extension (ws://127.0.0.1:8765)
+- **Dual Tracking**: Monitors both browser extension messages AND Hyprland window titles
 - **Universal Domain Extraction**: Extracts domains from ANY website (github.com, google.com, docs.rs, etc.)
 - **Time Tracking**: Records time spent on each domain during your session
-- **Work/Break Mode**: Automatically switches between work (25min) and break (5min) modes
-- **File Logging**: Logs all activity to `~/.local/share/stop_it/activity.log` by default
+- **Pomodoro Timer**: Automatically switches between work (25min) and break (5min) modes
+- **File Logging**: Logs all activity to `~/.local/share/stop_it/daemon.log`
 - **Desktop Notifications**: Sends native notifications when it's time to switch modes
-- **Session Statistics**: View detailed stats when you press Ctrl+C
-- **Verbose Mode**: Debug mode to see what titles are being detected
+- **Session Statistics**: View detailed stats after each work session
+- **Auto-Reconnect**: Extension automatically reconnects if daemon restarts
 
 ## Requirements
 
 - Linux with Hyprland (Wayland compositor)
 - `hyprctl` command available (included with Hyprland)
 - Rust 1.70 or later
+- systemd (for daemon autostart)
 
-## Browser Extension
+## Quick Start
 
-> 📘 **Documentation:** [Read the full Browser Extension Guide](./browser-extension/BrowserExtension.md)
+### 1. Install the Daemon
 
-## Native Host
+```bash
+./install_daemon.sh
+```
 
-> 📘 **Documentation:** [Read the full Native Host Guide](./src/NativeHost.md)
+This will:
 
-## Test It
+- Build the Rust application
+- Install and enable the systemd service
+- Start the daemon automatically
 
-1. After following both doc, load the extension and run the `NativeHost`
-2. Open your browser and navigate to any website (e.g., github.com)
-3. Check the native messaging log:
+### 2. Install the Browser Extension
 
-   ```bash
-   tail -f ~/.local/share/stop_it/native_messaging.log
-   ```
+```bash
+cd browser-extension
+npm install
+npm run build
+```
 
-4. Check the browser activity log:
+Then load the extension in your browser:
 
-   ```bash
-   tail -f ~/.local/share/stop_it/browser_activity.log
-   ```
+- Open `brave://extensions` (or `chrome://extensions`)
+- Enable "Developer mode"
+- Click "Load unpacked"
+- Select the `browser-extension/dist` folder
 
-You should see entries like:
+### 3. Verify It's Working
 
-```log
-[14:23:45] Received: url=https://github.com/..., title=..., domain=Some("github.com")
+Check the daemon logs:
+
+```bash
+journalctl --user -u stop-it -f
+```
+
+You should see:
+
+```
+🍅 Stop It - Daemon Mode
+Running WebSocket server on ws://127.0.0.1:8765
+New WebSocket connection from: 127.0.0.1:xxxxx
+[16:08:38] Browser switched to: github.com
+```
+
+## Useful Commands
+
+```bash
+# Check daemon status
+systemctl --user status stop-it
+
+# Stop the daemon
+systemctl --user stop stop-it
+
+# Start the daemon
+systemctl --user start stop-it
+
+# Restart the daemon
+systemctl --user restart stop-it
+
+# View daemon logs (follow mode)
+journalctl --user -u stop-it -f
 ```
 
 ## How It Works
@@ -55,77 +92,58 @@ You should see entries like:
 ### Architecture
 
 ```
-┌─────────────────┐      Native        ┌──────────────────┐
-│     Browser     │     Messaging      │   Rust Binary    │
-│   Extension     │◄──────────────────►│  (stop_it)       │
-│  (JavaScript)   │   JSON via stdin   │  --native-       │
-│                 │   /stdout          │   messaging      │
-└─────────────────┘                    └──────────────────┘
+┌─────────────────┐                    ┌──────────────────────────┐
+│     Browser     │     WebSocket      │   Rust Daemon            │
+│   Extension     │◄──────────────────►│  (always running)        │
+│  (JavaScript)   │  ws://localhost    │                          │
+│                 │     :8765          │  ├─ WebSocket Server     │
+└─────────────────┘                    │  ├─ Hyprland Monitor     │
+                                       │  ├─ Pomodoro Timer       │
+                                       │  └─ Activity Tracker     │
+                                       └──────────────────────────┘
 ```
 
 ### Message Flow
 
-1. Extension monitors active tab changes
-2. When URL/title changes, extension extracts:
-   - Full URL
-   - Page title
-   - Domain (hostname without www)
-3. Sends JSON message to native host via Chrome's native messaging API
-4. Rust app receives message on stdin, logs to files
-5. Rust app sends acknowledgment response
+1. **Daemon starts**: Launches WebSocket server on `ws://127.0.0.1:8765`
+2. **Extension connects**: Establishes persistent WebSocket connection
+3. **Continuous monitoring**:
+   - Extension sends URL/title updates when tabs change
+   - Hyprland poller detects window title changes every second
+   - Both sources feed into the same activity tracker
+4. **Pomodoro timer**: Runs every second, tracks work/break cycles
+5. **Real-time updates**: All activity logged and tracked continuously
+6. **Auto-reconnect**: If daemon restarts, extension reconnects automatically
 
 ## Troubleshooting
 
-### Extension shows errors in console
+**Daemon not starting:**
 
-1. Right-click extension icon → Inspect
-2. Check Console tab for errors
-3. Common error: `"Specified native messaging host not found"`
-   - Solution: Run `./install_native_messaging.sh`
+```bash
+# Check daemon status
+systemctl --user status stop-it
 
-### Native host not receiving messages
+# Check logs for errors
+journalctl --user -u stop-it -n 50
+```
 
-1. Check manifest files exist:
+**Extension can't connect:**
 
-   ```bash
-   ls ~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/
-   ```
+1. Verify daemon is running: `systemctl --user status stop-it`
+2. Check if WebSocket port is listening: `ss -tlnp | grep 8765`
+3. Check extension console (Right-click extension → Inspect)
+   - Should see: "Connected to Stop It daemon"
+   - If seeing: "WebSocket not connected" - daemon may be down
 
-2. Check manifest has correct extension ID:
+**No activity being tracked:**
 
-   ```bash
-   cat ~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.stopit.tracker.json
-   ```
+1. Check daemon logs: `journalctl --user -u stop-it -f`
+2. Open a website and see if messages appear
+3. Verify both extension and Hyprland monitoring are working
 
-   Should contain `chrome-extension://YOUR_ACTUAL_ID/`, not `EXTENSION_ID_PLACEHOLDER`
+## Browser Extension Documentation
 
-3. Check binary path in manifest is correct:
-
-   ```bash
-   # The path should point to your actual binary
-   jq .path ~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.stopit.tracker.json
-   ```
-
-### No logs appearing
-
-1. Check log directory exists:
-
-   ```bash
-   ls -la ~/.local/share/stop_it/
-   ```
-
-2. Test with manual invocation:
-
-   ```bash
-   echo '{"type":"tab_update","url":"https://test.com","title":"Test","domain":"test.com","timestamp":123}' | \
-     ./target/release/stop_it --native-messaging
-   ```
-
-3. Check file permissions on binary:
-
-   ```bash
-   ls -l ./target/release/stop_it
-   ```
+> 📘 **Documentation:** For detailed browser extension setup, see [Browser Extension Guide](./browser-extension/BrowserExtension.md)
 
 ## Privacy
 
